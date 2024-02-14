@@ -34,6 +34,7 @@ pytest.importorskip("requests")  # isort:skip
 
 import urllib.parse
 
+import urllib3
 import requests
 from requests.exceptions import InvalidURL, MissingSchema
 
@@ -200,3 +201,50 @@ def test_url_sanitization(instrument, elasticapm_client, waiting_httpserver):
 
     assert "pass" not in span["context"]["http"]["url"]
     assert constants.MASK_URL in span["context"]["http"]["url"]
+
+
+def test_requests_instrumentation_handles_retries(instrument, elasticapm_client, foohttpserver):
+    foohttpserver.serve_responses([("", 429, {}), ("", 200, {})])
+    url = foohttpserver.url + "/hello_world"
+    parsed_url = urllib.parse.urlparse(url)
+    elasticapm_client.begin_transaction("transaction.test")
+    with capture_span("test_request", "test"):
+        retries = urllib3.Retry(status=1, status_forcelist=[429])
+        s = requests.Session()
+        a = requests.adapters.HTTPAdapter(max_retries=retries)
+        s.mount("http://", a)
+        try:
+            s.get(url, allow_redirects=False)
+        except:
+            pass
+    elasticapm_client.end_transaction("MyView")
+
+    transactions = elasticapm_client.events[TRANSACTION]
+    spans = elasticapm_client.spans_for_transaction(transactions[0])
+    print(spans)
+    assert spans[0]["name"].startswith("GET 127.0.0.1:")
+    assert spans[0]["type"] == "external"
+    assert spans[0]["subtype"] == "http"
+    assert url == spans[0]["context"]["http"]["url"]
+    assert 200 == spans[0]["context"]["http"]["status_code"]
+    assert spans[0]["context"]["destination"]["service"] == {
+        "name": "",
+        "resource": "127.0.0.1:%d" % parsed_url.port,
+        "type": "",
+    }
+    assert spans[0]["context"]["service"]["target"]["type"] == "http"
+    assert spans[0]["context"]["service"]["target"]["name"] == f"127.0.0.1:{parsed_url.port}"
+    assert spans[0]["outcome"] == "success"
+
+    assert constants.TRACEPARENT_HEADER_NAME in foohttpserver.requests[0].headers
+    trace_parent = TraceParent.from_string(
+        foohttpserver.requests[0].headers[constants.TRACEPARENT_HEADER_NAME],
+        tracestate_string=foohttpserver.requests[0].headers[constants.TRACESTATE_HEADER_NAME],
+    )
+    assert trace_parent.trace_id == transactions[0]["trace_id"]
+    # Check that sample_rate was correctly placed in the tracestate
+    assert constants.TRACESTATE.SAMPLE_RATE in trace_parent.tracestate_dict
+
+    # this should be the span id of `requests`, not of urllib3
+    assert trace_parent.span_id == spans[0]["id"]
+    assert trace_parent.trace_options.recorded
