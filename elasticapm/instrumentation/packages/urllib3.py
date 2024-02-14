@@ -63,6 +63,8 @@ def update_headers(args, kwargs, instance, transaction, trace_parent):
     """
     from urllib3._version import __version__ as urllib3_version
 
+    print("update_headers", args, "kw headers", kwargs.get("headers"), instance)
+
     if urllib3_version.startswith("2") and len(args) >= 5 and args[4]:
         headers = args[4].copy()
         args = tuple(itertools.chain((args[:4]), (headers,), args[5:]))

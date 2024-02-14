@@ -294,3 +294,50 @@ def test_instance_headers_are_respected(
         assert "kwargs" in request_headers
     if instance_headers and not (header_arg or header_kwarg):
         assert "instance" in request_headers
+
+
+def test_urllib3_retries(instrument, elasticapm_client, foohttpserver):
+    foohttpserver.serve_responses([("", 429, {}), ("", 200, {})])
+    url = foohttpserver.url + "/hello_world"
+    parsed_url = urllib.parse.urlparse(url)
+    elasticapm_client.begin_transaction("transaction")
+    expected_sig = "GET {0}".format(parsed_url.netloc)
+    with capture_span("test_name", "test_type"):
+        retries = urllib3.Retry(status=1, status_forcelist=[429])
+        pool = urllib3.PoolManager(timeout=0.1, retries=retries)
+
+        url = "http://{0}/hello_world".format(parsed_url.netloc)
+        try:
+            r = pool.request("GET", url)
+        except:
+            pass
+
+    elasticapm_client.end_transaction("MyView")
+
+    transactions = elasticapm_client.events[TRANSACTION]
+    spans = elasticapm_client.spans_for_transaction(transactions[0])
+
+    expected_signatures = {"test_name", expected_sig}
+
+    assert {t["name"] for t in spans} == expected_signatures
+
+    assert len(spans) == 2
+
+    assert spans[0]["name"] == expected_sig
+    assert spans[0]["type"] == "external"
+    assert spans[0]["subtype"] == "http"
+    assert spans[0]["context"]["http"]["url"] == url
+    assert spans[0]["context"]["http"]["status_code"] == 200
+    assert spans[0]["context"]["destination"]["service"] == {
+        "name": "",
+        "resource": "127.0.0.1:%d" % parsed_url.port,
+        "type": "",
+    }
+    assert spans[0]["context"]["service"]["target"]["type"] == "http"
+    assert spans[0]["context"]["service"]["target"]["name"] == f"127.0.0.1:{parsed_url.port}"
+    assert spans[0]["parent_id"] == spans[1]["id"]
+    assert spans[0]["outcome"] == "success"
+
+    assert spans[1]["name"] == "test_name"
+    assert spans[1]["type"] == "test_type"
+    assert spans[1]["parent_id"] == transactions[0]["id"]
