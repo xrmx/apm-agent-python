@@ -303,6 +303,72 @@ def elasticapm_client_log_file(request):
     logger.setLevel(logging.NOTSET)
 
 
+@pytest.fixture
+def foohttpserver(request):
+    from pytest_localserver import http
+
+    class FooServer(http.ContentServer):
+        def __init__(self, host="127.0.0.1", port=0, ssl_context=None):
+            super().__init__(host, port, ssl_context=ssl_context)
+            self.responses = []
+
+        def __call__(self, environ, start_response):
+            """
+            This is the WSGI application.
+            """
+            request = Request(environ)
+            self.requests.append(request)
+
+            ## HACK: if we have responses pick a response from there
+            if self.responses:
+
+                content, code, headers = self.responses.pop(0)
+
+                response = http.Response(response=content, status=code)
+                response.headers.clear()
+                response.headers.extend(headers)
+
+                return response(environ, start_response)
+
+            if (
+                request.content_type == "application/x-www-form-urlencoded"
+                and request.method == "POST"
+                and self.show_post_vars
+            ):
+                content = json.dumps(request.form)
+            else:
+                content = self.content
+
+            response = http.Response(response=content, status=self.code)
+            response.headers.clear()
+            response.headers.extend(self.headers)
+            print(response)
+
+            return response(environ, start_response)
+
+        # HACK: a list of tuples (content, code, headers)
+        def serve_responses(self, responses):
+            for content, code, headers in responses:
+                if not isinstance(content, (str, bytes, list, tuple)):
+                    # If content is an iterable which is not known to be a string,
+                    # bytes, or sequence, it might be something that can only be iterated
+                    # through once, in which case we need to cache it so it can be reused
+                    # to handle multiple requests.
+                    try:
+                        content = tuple(iter(content))
+                    except TypeError:
+                        # this probably means that content is not iterable, so just go
+                        # ahead in case it's some type that Response knows how to handle
+                        pass
+                self.responses.append((content, code, headers))
+
+    server = FooServer()
+    server.start()
+    request.addfinalizer(server.stop)
+    wait_for_open_port(server.server_address[1])
+    return server
+
+
 @pytest.fixture()
 def waiting_httpserver(httpserver):
     wait_for_open_port(httpserver.server_address[1])
