@@ -348,7 +348,7 @@ def test_transaction_name_is_route(app, elasticapm_client):
 )
 def test_trailing_slash_redirect_detection(app, elasticapm_client, url, expected):
     client = TestClient(app)
-    response = client.get(url, allow_redirects=False)
+    response = client.get(url, follow_redirects=False)
     assert response.status_code == 307
     assert len(elasticapm_client.events[constants.TRANSACTION]) == 1
     for transaction in elasticapm_client.events[constants.TRANSACTION]:
